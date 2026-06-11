@@ -1,0 +1,138 @@
+import android.content.Context
+import android.graphics.PixelFormat
+import android.os.Build
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.ImageView
+import android.widget.LinearLayout
+
+// =========================================================================
+//  WINDOW LAYOUT POSITION ANCHORING ALGORITHM
+// =========================================================================
+// This snippet demonstrates how to prevent an Android WindowManager overlay 
+// window from shifting or causing the main content (e.g., a screen pet) 
+// to jump on the screen when expanding layout headers/bubbles dynamically.
+
+class OverlayServiceSnippet {
+
+    private lateinit var windowManager: WindowManager
+    private lateinit var overlayView: View
+    private lateinit var shimejiImageView: ImageView
+    
+    private var screenWidth = 0
+    private var screenHeight = 0
+
+    /**
+     * Updates the window layout params and compensates child translation shifts
+     * to ensure the child view (e.g. shimeji character) remains at the exact same
+     * physical screen pixel coordinate when the window resizes (expands/shrinks).
+     *
+     * @param action Layout modification task (e.g., making speech bubble VISIBLE/GONE)
+     */
+    private fun updateWindowLayoutWithConstantCenter(action: () -> Unit) {
+        if (!::overlayView.isInitialized || !::windowManager.isInitialized) {
+            action()
+            return
+        }
+
+        val params = overlayView.layoutParams as WindowManager.LayoutParams
+        val oldWidth = overlayView.width
+        val oldHeight = overlayView.height
+        
+        // Step 1: Capture the exact physical screen position of the anchor child view
+        val charWidth = shimejiImageView.width.coerceAtLeast(1)
+        val charHeight = shimejiImageView.height.coerceAtLeast(1)
+        
+        // Calculate the anchor child view's relative offsets within the parent window
+        val oldCharRelativeX = if (oldWidth > 0) {
+            (oldWidth - charWidth) / 2 + shimejiImageView.translationX.toInt()
+        } else {
+            0
+        }
+        val oldCharRelativeY = if (oldHeight > 0) {
+            shimejiImageView.top + shimejiImageView.translationY.toInt()
+        } else {
+            0
+        }
+        
+        // Calculate absolute coordinates on the device screen
+        val charScreenX = params.x + oldCharRelativeX
+        val charScreenY = params.y + oldCharRelativeY
+
+        // Step 2: Execute the action that changes view visibilities (width/height changes)
+        action()
+
+        // Step 3: Measure the new dimensions of the parent layout
+        overlayView.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val newWidth = overlayView.measuredWidth
+        val newHeight = overlayView.measuredHeight
+
+        var updateLayoutNeeded = false
+
+        // Step 4: Horizontal (X-Axis) Stabilization
+        if (oldWidth > 0 && newWidth != oldWidth) {
+            // Find target X for the window that keeps the character centered
+            val targetX = charScreenX + charWidth / 2 - newWidth / 2
+            
+            // Clamp window X inside screen boundaries
+            val clampedX = targetX.coerceIn(0, screenWidth - newWidth.coerceAtLeast(1))
+            
+            // Adjust character translation inside the window to match target position
+            val newTranslationX = (charScreenX - clampedX) - (newWidth - charWidth) / 2
+            
+            shimejiImageView.translationX = newTranslationX.toFloat()
+            val shadow = overlayView.findViewById<View>(R.id.characterShadow)
+            if (shadow != null) {
+                shadow.translationX = newTranslationX.toFloat()
+            }
+
+            params.x = clampedX
+            updateLayoutNeeded = true
+        }
+
+        // Step 5: Vertical (Y-Axis) Stabilization (LinearLayout specific)
+        if (oldHeight > 0 && newHeight != oldHeight) {
+            // Determine the new relative top boundary of the character view 
+            // after the top-aligned speech bubble expands or collapses.
+            var newCharTop = 0
+            val rootLayout = overlayView as? LinearLayout
+            if (rootLayout != null) {
+                for (i in 0 until rootLayout.childCount) {
+                    val child = rootLayout.getChildAt(i)
+                    if (child.id == R.id.shimejiImageView) {
+                        break
+                    }
+                    if (child.visibility != View.GONE) {
+                        newCharTop += child.measuredHeight
+                        val lp = child.layoutParams as? LinearLayout.LayoutParams
+                        if (lp != null) {
+                            newCharTop += lp.topMargin + lp.bottomMargin
+                        }
+                    }
+                }
+            }
+            
+            // Calculate target Y for the window to maintain anchor position
+            val targetY = charScreenY - newCharTop
+            
+            // Clamp window Y inside screen height boundaries
+            val clampedY = targetY.coerceIn(0, (screenHeight - newHeight).coerceAtLeast(0))
+            
+            // Compensate Y shift on the character view translation
+            val newTranslationY = charScreenY - clampedY - newCharTop
+            
+            shimejiImageView.translationY = newTranslationY.toFloat()
+            params.y = clampedY
+            updateLayoutNeeded = true
+        }
+
+        // Step 6: Apply the layout updates atomically
+        if (updateLayoutNeeded) {
+            windowManager.updateViewLayout(overlayView, params)
+        }
+    }
+}
